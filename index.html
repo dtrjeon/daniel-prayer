@@ -135,14 +135,17 @@
   }
   .grid-table td.slot {
     border:1px solid var(--border); text-align:center;
-    padding:0; height:48px; cursor:pointer; background:white;
+    padding:0; height:48px; cursor:pointer; background:#e8e8e8;
     transition:background 0.1s;
     touch-action:manipulation;
     -webkit-user-select:none; user-select:none;
   }
+  .grid-table td.slot.has-applicant {
+    background:white;
+  }
   .grid-table td.slot:active { background:#f0f5e8; }
   .grid-table td.slot.selected {
-    background:var(--olive-pale); border-color:var(--olive);
+    background:var(--olive-pale);
   }
   .slot-inner {
     width:100%; height:100%;
@@ -165,6 +168,44 @@
     font-weight:700; color:var(--olive); line-height:1;
   }
   .count-label { font-size:13px; color:var(--muted); margin-top:3px; }
+
+  /* ── 범례 ── */
+  .legend-bar {
+    display:flex; gap:14px; align-items:center;
+    padding:8px 14px; margin:8px 12px 0;
+    background:var(--parchment); border:1px solid var(--border);
+    border-radius:var(--radius); flex-wrap:wrap;
+  }
+  .legend-item { display:flex; align-items:center; gap:6px; }
+  .legend-item span { font-size:12px; color:var(--muted); }
+  .legend-box {
+    width:22px; height:22px; border:1px solid var(--border);
+    border-radius:4px; display:flex; align-items:center; justify-content:center;
+    font-size:13px; flex-shrink:0;
+  }
+  .legend-empty { background:#e8e8e8; }
+  .legend-has   { background:white; }
+  .legend-mine  { background:var(--olive); color:white; font-weight:600; }
+
+  /* ── 불러오기 버튼 ── */
+  .load-row {
+    display:flex; gap:8px; margin-top:10px;
+  }
+  .btn-load {
+    flex:1; padding:11px 14px; border-radius:var(--radius);
+    font-family:'Noto Sans KR',sans-serif; font-size:14px; font-weight:500;
+    cursor:pointer; border:1.5px solid var(--gold-border);
+    background:var(--gold-pale); color:var(--gold);
+    min-height:44px; transition:background 0.1s;
+    -webkit-appearance:none; touch-action:manipulation;
+  }
+  .btn-load:active { background:#f5e4a0; }
+  .load-status {
+    font-size:12px; color:var(--muted); margin-top:6px;
+    min-height:18px; text-align:center;
+  }
+  .load-status.ok    { color:var(--olive); }
+  .load-status.error { color:#c0392b; }
 
   /* ── 버튼 ── */
   .actions { display:flex; gap:10px; padding:0 12px 16px; }
@@ -255,8 +296,29 @@
       </div>
     </div>
   </div>
+  <!-- 불러오기 -->
+  <div class="load-row">
+    <button class="btn-load" onclick="loadMyData()">📥 내 신청 내역 불러오기</button>
+  </div>
+  <div class="load-status" id="loadStatus"></div>
 </div>
 
+
+<!-- 범례 -->
+<div class="legend-bar">
+  <div class="legend-item">
+    <div class="legend-box legend-empty"></div>
+    <span>미신청</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-box legend-has"></div>
+    <span>신청완</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-box legend-mine">&#10004;</div>
+    <span>내 선택</span>
+  </div>
+</div>
 <div class="schedule-wrap" id="scheduleArea"></div>
 
 <div class="summary">
@@ -290,7 +352,7 @@
 
 <div class="loading-overlay" id="loadingOverlay">
   <div class="spinner"></div>
-  <p style="font-size:13px;color:var(--muted)">제출 중...</p>
+  <p style="font-size:13px;color:var(--muted)" id="loadingMsg">처리 중...</p>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -298,7 +360,7 @@
 // =============================================
 // ★ 여기에 Apps Script 배포 URL을 입력하세요 ★
 // =============================================
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycby1tSXmWlP-Nsk_wjLKd3ahpzjLIRvAPtQ6739sKq_eOlONUH4BzptRUMqnu-XhmHSFeQ/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzOsARBsG5bmL7pvTNN6WMH1JFEq9Jy9_nAqlcbj3w55PPyCXmWpGr3NKJTnGiqbYcPhw/exec";
 // =============================================
 
 const WEEKS = [
@@ -338,6 +400,28 @@ const MEALS = [
 ];
 
 const sel = {};
+let sheetData = {}; // 구글시트 전체 신청 현황 { "0517_morning": 2, ... }
+
+// 페이지 로드 시 구글시트 신청 현황 미리 가져오기
+async function loadSheetCounts() {
+  try {
+    const url = SCRIPT_URL + "?action=read&t=" + Date.now();
+    const res  = await fetch(url, { method:"GET", redirect:"follow" });
+    const data = await res.json();
+    if (data.status !== "ok") return;
+
+    // 각 슬롯별 신청자 수 집계
+    sheetData = {};
+    (data.rows || []).forEach(row => {
+      Object.entries(row.selections || {}).forEach(([key, val]) => {
+        if (val === "O") sheetData[key] = (sheetData[key] || 0) + 1;
+      });
+    });
+    buildSchedule(); // 신청 현황 반영하여 다시 그리기
+  } catch(e) {
+    // 실패해도 그리드는 그냥 표시
+  }
+}
 
 function buildSchedule() {
   const area = document.getElementById("scheduleArea");
@@ -384,11 +468,12 @@ function buildSchedule() {
       week.dates.forEach(d => {
         const key = d.key + "_" + meal.key;
         const td  = document.createElement("td");
-        td.className = "slot" + (sel[key] ? " selected" : "");
+        const hasApplicant = sheetData[key] > 0;
+        td.className = "slot" + (sel[key] ? " selected" : "") + (hasApplicant ? " has-applicant" : "");
         td.onclick = () => toggle(td, key);
         const inner = document.createElement("div");
         inner.className = "slot-inner";
-        inner.textContent = sel[key] ? "✓" : "";
+        inner.innerHTML  = sel[key] ? "&#10004;" : "";
         td.appendChild(inner);
         tr.appendChild(td);
       });
@@ -405,7 +490,7 @@ function buildSchedule() {
 function toggle(td, key) {
   sel[key] = !sel[key];
   td.classList.toggle("selected", sel[key]);
-  td.querySelector(".slot-inner").textContent = sel[key] ? "✓" : "";
+  td.querySelector(".slot-inner").innerHTML  = sel[key] ? "&#10004;" : "";
   updateSummary();
 }
 
@@ -470,17 +555,16 @@ async function submitToSheet() {
   document.getElementById("submitBtn").disabled = true;
 
   try {
-    const res    = await fetch(SCRIPT_URL, {
-      method: "POST",
-      body:   JSON.stringify({
-        name:      fullName,
-        timestamp: new Date().toLocaleString("ko-KR"),
-        selections
-      })
-    });
+    const sendUrl = SCRIPT_URL
+      + "?action=save"
+      + "&name="       + encodeURIComponent(fullName)
+      + "&timestamp="  + encodeURIComponent(new Date().toLocaleString("ko-KR"))
+      + "&selections=" + encodeURIComponent(JSON.stringify(selections))
+      + "&t="          + Date.now();
+    const res    = await fetch(sendUrl, { method:"GET", redirect:"follow" });
     const result = await res.json();
     if (result.status === "ok") {
-      showToast("✓ 구글 시트에 저장되었습니다!", "success");
+      showToast("저장 완료!", "success");
       setTimeout(() => {
         clearAll();
         document.getElementById("nameInput").value  = "";
@@ -504,8 +588,78 @@ function showToast(msg, type = "") {
   setTimeout(() => { t.className = "toast"; }, 3500);
 }
 
+// =============================================
+// 내 신청 내역 불러오기
+// =============================================
+async function loadMyData() {
+  const name      = document.getElementById("nameInput").value.trim();
+  const className = document.getElementById("classInput").value;
+  const statusEl  = document.getElementById("loadStatus");
+
+  if (!name) {
+    document.getElementById("nameInput").classList.add("error");
+    setLoadStatus("이름을 입력해 주세요", "error");
+    document.getElementById("nameInput").focus();
+    return;
+  }
+  document.getElementById("nameInput").classList.remove("error");
+
+  if (!className) {
+    document.getElementById("classInput").classList.add("error");
+    setLoadStatus("반명을 선택해 주세요", "error");
+    return;
+  }
+  document.getElementById("classInput").classList.remove("error");
+
+  const fullName = name + " (" + className + ")";
+  setLoadStatus("불러오는 중...", "");
+
+  document.getElementById("loadingOverlay").classList.add("show");
+  try {
+    const url = SCRIPT_URL + "?action=read&t=" + Date.now();
+    const res  = await fetch(url, { method:"GET", redirect:"follow" });
+    const data = await res.json();
+
+    if (data.status !== "ok") throw new Error(data.message || "오류");
+
+    // fullName 일치하는 행 찾기
+    const row = (data.rows || []).find(r => r.name === fullName);
+
+    if (!row) {
+      // 데이터 없으면 전체 초기화
+      Object.keys(sel).forEach(k => delete sel[k]);
+      buildSchedule();
+      setLoadStatus("⚠️ 등록된 내역이 없습니다. 새로 선택해 주세요.", "error");
+      return;
+    }
+
+    // sel 객체에 반영
+    Object.keys(sel).forEach(k => delete sel[k]);
+    Object.entries(row.selections || {}).forEach(([k, v]) => {
+      if (v === "O") sel[k] = true;
+    });
+
+    buildSchedule();
+    const count = Object.values(sel).filter(Boolean).length;
+    setLoadStatus(count + "개 항목을 불러왔습니다.", "ok");
+
+  } catch(e) {
+    setLoadStatus("불러오기 실패: " + e.message, "error");
+  } finally {
+    document.getElementById("loadingOverlay").classList.remove("show");
+  }
+}
+
+function setLoadStatus(msg, type) {
+  const el = document.getElementById("loadStatus");
+  el.textContent = msg;
+  el.className = "load-status" + (type ? " " + type : "");
+}
+
 // 초기 실행
 buildSchedule();
+loadSheetCounts();
+
 </script>
 </body>
 </html>
